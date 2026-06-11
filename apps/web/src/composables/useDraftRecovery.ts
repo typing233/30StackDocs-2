@@ -1,11 +1,17 @@
-import { ref, onMounted, type Ref } from 'vue';
+import { ref, watch, type Ref } from 'vue';
 
-export function useDraftRecovery(pageId: Ref<string>) {
+/**
+ * Draft recovery composable.
+ * Uses pageSlug (available immediately from route params) as the localStorage key.
+ * Watches the slug and triggers check once it has a value.
+ */
+export function useDraftRecovery(pageSlug: Ref<string>) {
   const hasDraft = ref(false);
   const draftContent = ref<{ contentHtml?: string; contentMarkdown?: string } | null>(null);
 
-  onMounted(() => {
-    const key = `draft-${pageId.value}`;
+  function checkForDraft(slug: string) {
+    if (!slug) return;
+    const key = `draft-${slug}`;
     const saved = localStorage.getItem(key);
     if (saved) {
       try {
@@ -15,7 +21,14 @@ export function useDraftRecovery(pageId: Ref<string>) {
         localStorage.removeItem(key);
       }
     }
-  });
+  }
+
+  // Check immediately if slug already has a value, otherwise watch for it
+  watch(pageSlug, (slug) => {
+    if (slug && !hasDraft.value) {
+      checkForDraft(slug);
+    }
+  }, { immediate: true });
 
   function acceptDraft() {
     hasDraft.value = false;
@@ -23,7 +36,10 @@ export function useDraftRecovery(pageId: Ref<string>) {
   }
 
   function discardDraft() {
-    localStorage.removeItem(`draft-${pageId.value}`);
+    const slug = pageSlug.value;
+    if (slug) {
+      localStorage.removeItem(`draft-${slug}`);
+    }
     hasDraft.value = false;
     draftContent.value = null;
   }

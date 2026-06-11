@@ -1,7 +1,15 @@
-import { ref, type Ref } from 'vue';
+import { ref, watch, type Ref } from 'vue';
 import { pagesApi } from '@/api/pages.api';
 
-export function useAutoSave(pageId: Ref<string>, getContent: () => { contentHtml?: string; contentMarkdown?: string }) {
+/**
+ * Auto-save composable. Uses pageSlug as localStorage key (available immediately from route).
+ * Waits for pageId to be non-empty before making API calls.
+ */
+export function useAutoSave(
+  pageId: Ref<string>,
+  pageSlug: Ref<string>,
+  getContent: () => { contentHtml?: string; contentMarkdown?: string },
+) {
   const DEBOUNCE_MS = 3000;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const lastSaved = ref<Date | null>(null);
@@ -11,17 +19,21 @@ export function useAutoSave(pageId: Ref<string>, getContent: () => { contentHtml
   function debouncedSave() {
     if (timer) clearTimeout(timer);
     timer = setTimeout(async () => {
+      const id = pageId.value;
+      const slug = pageSlug.value;
+      if (!id || !slug) return;
+
       isSaving.value = true;
       error.value = null;
       try {
         const content = getContent();
-        await pagesApi.saveDraft(pageId.value, content);
+        await pagesApi.saveDraft(id, content);
         lastSaved.value = new Date();
-        localStorage.setItem(`draft-${pageId.value}`, JSON.stringify(content));
+        localStorage.setItem(`draft-${slug}`, JSON.stringify(content));
       } catch (e) {
         error.value = 'Auto-save failed, draft preserved locally';
         const content = getContent();
-        localStorage.setItem(`draft-${pageId.value}`, JSON.stringify(content));
+        localStorage.setItem(`draft-${slug}`, JSON.stringify(content));
       } finally {
         isSaving.value = false;
       }
@@ -29,7 +41,10 @@ export function useAutoSave(pageId: Ref<string>, getContent: () => { contentHtml
   }
 
   function clearDraft() {
-    localStorage.removeItem(`draft-${pageId.value}`);
+    const slug = pageSlug.value;
+    if (slug) {
+      localStorage.removeItem(`draft-${slug}`);
+    }
   }
 
   function destroy() {

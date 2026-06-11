@@ -28,13 +28,12 @@ export class BooksController {
 
   @Get()
   async findAll(@Query() query: PaginationDto, @CurrentUser() user: any) {
-    const isAdmin = user.roles.includes('admin');
-    return this.booksService.findAll(user.tenantId, query, user.id, isAdmin);
+    return this.booksService.findAll(user.tenantId, query, user.id, user.roles);
   }
 
   @Get(':slug')
   async findBySlug(@Param('slug') slug: string, @CurrentUser() user: any) {
-    const book = await this.booksService.findBySlug(slug, user.tenantId);
+    const book = await this.booksService.findBySlug(slug, user.tenantId, user.id, user.roles);
     return { data: book };
   }
 
@@ -45,14 +44,14 @@ export class BooksController {
     @Body() dto: UpdateBookDto,
     @CurrentUser() user: any,
   ) {
-    const book = await this.booksService.update(id, dto, user.id, user.tenantId);
+    const book = await this.booksService.update(id, dto, user.id, user.tenantId, user.roles);
     return { data: book };
   }
 
   @Delete(':id')
-  @Roles('admin')
+  @Roles('admin', 'editor')
   async remove(@Param('id') id: string, @CurrentUser() user: any) {
-    await this.booksService.softDelete(id, user.tenantId);
+    await this.booksService.softDelete(id, user.tenantId, user.id, user.roles);
     return { data: { message: 'Book deleted successfully' } };
   }
 

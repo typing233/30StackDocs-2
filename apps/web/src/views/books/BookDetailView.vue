@@ -11,41 +11,50 @@
       </div>
     </div>
 
+    <!-- Chapters with drag-and-drop reorder -->
     <div class="content-tree">
       <div
-        v-for="chapter in bookStore.currentBook.chapters"
+        v-for="(chapter, idx) in chapters"
         :key="chapter.id"
         class="chapter-item"
+        :class="{ 'drag-over': dragOverIndex === idx }"
+        draggable="true"
+        @dragstart="onChapterDragStart(idx)"
+        @dragover.prevent="onChapterDragOver(idx)"
+        @dragleave="onChapterDragLeave"
+        @drop="onChapterDrop(idx)"
+        @dragend="onChapterDragEnd"
       >
-        <div class="chapter-header" @click="$router.push(`/chapters/${chapter.id}`)">
+        <div class="chapter-header">
+          <span class="drag-handle" title="Drag to reorder">⠿</span>
           <span class="icon">📁</span>
-          <span>{{ chapter.name }}</span>
+          <span class="chapter-name" @click="$router.push(`/chapters/${chapter.id}`)">{{ chapter.name }}</span>
         </div>
         <div class="chapter-pages" v-if="chapter.pages?.length">
           <div
             v-for="page in chapter.pages"
             :key="page.id"
             class="page-item"
-            @click="$router.push(`/pages/${page.slug}`)"
           >
-            <span class="icon">📄</span>
-            <span>{{ page.name }}</span>
+            <span class="icon" @click="$router.push(`/pages/${page.slug}`)">📄</span>
+            <span class="page-name" @click="$router.push(`/pages/${page.slug}`)">{{ page.name }}</span>
             <span v-if="page.isDraft" class="draft-badge">Draft</span>
+            <button class="btn-move" @click="openMovePage(page)" title="Move to another chapter">↔</button>
           </div>
         </div>
       </div>
 
       <div v-if="bookStore.currentBook.directPages?.length" class="direct-pages">
-        <h3>Pages</h3>
+        <h3>Pages (no chapter)</h3>
         <div
           v-for="page in bookStore.currentBook.directPages"
           :key="page.id"
           class="page-item"
-          @click="$router.push(`/pages/${page.slug}`)"
         >
-          <span class="icon">📄</span>
-          <span>{{ page.name }}</span>
+          <span class="icon" @click="$router.push(`/pages/${page.slug}`)">📄</span>
+          <span class="page-name" @click="$router.push(`/pages/${page.slug}`)">{{ page.name }}</span>
           <span v-if="page.isDraft" class="draft-badge">Draft</span>
+          <button class="btn-move" @click="openMovePage(page)" title="Move to a chapter">↔</button>
         </div>
       </div>
     </div>
@@ -76,6 +85,13 @@
             <label>Page Name</label>
             <input v-model="pageName" required />
           </div>
+          <div class="form-group">
+            <label>In Chapter (optional)</label>
+            <select v-model="pageChapterId">
+              <option value="">No chapter (direct page)</option>
+              <option v-for="ch in chapters" :key="ch.id" :value="ch.id">{{ ch.name }}</option>
+            </select>
+          </div>
           <div class="modal-actions">
             <button type="button" @click="showAddPage = false">Cancel</button>
             <button type="submit" class="btn-primary">Create</button>
@@ -83,16 +99,35 @@
         </form>
       </div>
     </div>
+
+    <!-- Move Page Modal -->
+    <div v-if="showMovePage" class="modal-overlay" @click.self="showMovePage = false">
+      <div class="modal">
+        <h2>Move Page: {{ moveTargetPage?.name }}</h2>
+        <div class="form-group">
+          <label>Move to chapter</label>
+          <select v-model="moveTargetChapterId">
+            <option value="">No chapter (direct page)</option>
+            <option v-for="ch in chapters" :key="ch.id" :value="ch.id">{{ ch.name }}</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" @click="showMovePage = false">Cancel</button>
+          <button class="btn-primary" @click="handleMovePage">Move</button>
+        </div>
+      </div>
+    </div>
   </div>
   <div v-else class="loading">Loading...</div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useBookStore } from '@/stores/book.store';
 import { chaptersApi } from '@/api/chapters.api';
 import { pagesApi } from '@/api/pages.api';
+import type { Chapter, Page } from '@/types';
 
 const route = useRoute();
 const router = useRouter();
@@ -100,13 +135,84 @@ const bookStore = useBookStore();
 
 const showAddChapter = ref(false);
 const showAddPage = ref(false);
+const showMovePage = ref(false);
 const chapterName = ref('');
 const pageName = ref('');
+const pageChapterId = ref('');
+
+// Drag-and-drop state
+const dragIndex = ref<number | null>(null);
+const dragOverIndex = ref<number | null>(null);
+
+// Move page state
+const moveTargetPage = ref<Page | null>(null);
+const moveTargetChapterId = ref('');
+
+const chapters = computed(() => {
+  return bookStore.currentBook?.chapters
+    ? [...bookStore.currentBook.chapters].sort((a, b) => a.priority - b.priority)
+    : [];
+});
 
 onMounted(() => {
   bookStore.fetchBook(route.params.slug as string);
 });
 
+// --- Chapter drag-and-drop reorder ---
+function onChapterDragStart(idx: number) {
+  dragIndex.value = idx;
+}
+
+function onChapterDragOver(idx: number) {
+  dragOverIndex.value = idx;
+}
+
+function onChapterDragLeave() {
+  dragOverIndex.value = null;
+}
+
+function onChapterDragEnd() {
+  dragIndex.value = null;
+  dragOverIndex.value = null;
+}
+
+async function onChapterDrop(targetIdx: number) {
+  dragOverIndex.value = null;
+  if (dragIndex.value === null || dragIndex.value === targetIdx) return;
+  if (!bookStore.currentBook) return;
+
+  const reordered = [...chapters.value];
+  const [moved] = reordered.splice(dragIndex.value, 1);
+  reordered.splice(targetIdx, 0, moved);
+  dragIndex.value = null;
+
+  const orderedIds = reordered.map((ch) => ch.id);
+  await chaptersApi.reorder(bookStore.currentBook.id, orderedIds);
+  bookStore.fetchBook(route.params.slug as string);
+}
+
+// --- Page move ---
+function openMovePage(page: Page) {
+  moveTargetPage.value = page;
+  moveTargetChapterId.value = page.chapterId || '';
+  showMovePage.value = true;
+}
+
+async function handleMovePage() {
+  if (!moveTargetPage.value || !bookStore.currentBook) return;
+
+  await pagesApi.move(moveTargetPage.value.id, {
+    targetChapterId: moveTargetChapterId.value || undefined,
+    targetBookId: moveTargetChapterId.value ? undefined : bookStore.currentBook.id,
+    priority: moveTargetPage.value.priority,
+  });
+
+  showMovePage.value = false;
+  moveTargetPage.value = null;
+  bookStore.fetchBook(route.params.slug as string);
+}
+
+// --- Add chapter/page ---
 async function handleAddChapter() {
   if (!bookStore.currentBook) return;
   await chaptersApi.create(bookStore.currentBook.id, { name: chapterName.value });
@@ -120,9 +226,11 @@ async function handleAddPage() {
   const { data } = await pagesApi.create({
     name: pageName.value,
     bookId: bookStore.currentBook.id,
+    chapterId: pageChapterId.value || undefined,
   });
   showAddPage.value = false;
   pageName.value = '';
+  pageChapterId.value = '';
   router.push(`/pages/${data.data.slug}/edit`);
 }
 </script>
@@ -167,11 +275,15 @@ async function handleAddPage() {
   border: 1px solid #e0e0e0;
   border-radius: 6px;
   overflow: hidden;
+  transition: border-color 0.15s;
+}
+.chapter-item.drag-over {
+  border-color: #2196f3;
+  background: #e3f2fd;
 }
 .chapter-header {
   padding: 0.75rem 1rem;
   background: #f8f9fa;
-  cursor: pointer;
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -180,12 +292,24 @@ async function handleAddPage() {
 .chapter-header:hover {
   background: #e9ecef;
 }
+.drag-handle {
+  cursor: grab;
+  color: #999;
+  font-size: 1.125rem;
+  user-select: none;
+}
+.drag-handle:active {
+  cursor: grabbing;
+}
+.chapter-name {
+  cursor: pointer;
+  flex: 1;
+}
 .chapter-pages {
   padding: 0.25rem 0;
 }
 .page-item {
   padding: 0.5rem 1rem 0.5rem 2.5rem;
-  cursor: pointer;
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -193,8 +317,13 @@ async function handleAddPage() {
 .page-item:hover {
   background: #f0f0f0;
 }
+.page-name {
+  cursor: pointer;
+  flex: 1;
+}
 .icon {
   font-size: 0.875rem;
+  cursor: pointer;
 }
 .draft-badge {
   font-size: 0.625rem;
@@ -202,7 +331,19 @@ async function handleAddPage() {
   color: #333;
   padding: 0.125rem 0.375rem;
   border-radius: 3px;
-  margin-left: auto;
+}
+.btn-move {
+  padding: 0.125rem 0.375rem;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.75rem;
+  color: #666;
+}
+.btn-move:hover {
+  background: #e9ecef;
+  color: #333;
 }
 .direct-pages {
   margin-top: 1rem;
@@ -244,7 +385,8 @@ async function handleAddPage() {
   margin-bottom: 0.25rem;
   font-size: 0.875rem;
 }
-.form-group input {
+.form-group input,
+.form-group select {
   width: 100%;
   padding: 0.5rem 0.75rem;
   border: 1px solid #ddd;

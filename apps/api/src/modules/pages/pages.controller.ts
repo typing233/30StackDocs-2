@@ -24,13 +24,13 @@ export class PagesController {
   @Post()
   @Roles('admin', 'editor')
   async create(@Body() dto: CreatePageDto, @CurrentUser() user: any) {
-    const page = await this.pagesService.create(dto, user.id, user.tenantId);
+    const page = await this.pagesService.create(dto, user.id, user.tenantId, user.roles);
     return { data: page };
   }
 
   @Get(':slug')
   async findBySlug(@Param('slug') slug: string, @CurrentUser() user: any) {
-    const page = await this.pagesService.findBySlug(slug, user.tenantId);
+    const page = await this.pagesService.findBySlug(slug, user.tenantId, user.id, user.roles);
     return { data: page };
   }
 
@@ -41,12 +41,7 @@ export class PagesController {
     @Body() dto: UpdatePageDto,
     @CurrentUser() user: any,
   ) {
-    const page = await this.pagesService.update(
-      id,
-      dto,
-      user.id,
-      user.tenantId,
-    );
+    const page = await this.pagesService.update(id, dto, user.id, user.tenantId, user.roles);
     return { data: page };
   }
 
@@ -57,7 +52,7 @@ export class PagesController {
     @Body() dto: AutoSaveDto,
     @CurrentUser() user: any,
   ) {
-    await this.pagesService.saveDraft(id, dto, user.id, user.tenantId);
+    await this.pagesService.saveDraft(id, dto, user.id, user.tenantId, user.roles);
     return { data: { message: 'Draft saved' } };
   }
 
@@ -68,7 +63,7 @@ export class PagesController {
     @Body() dto: MovePageDto,
     @CurrentUser() user: any,
   ) {
-    const page = await this.pagesService.move(id, dto, user.id, user.tenantId);
+    const page = await this.pagesService.move(id, dto, user.id, user.tenantId, user.roles);
     return { data: page };
   }
 
@@ -84,11 +79,7 @@ export class PagesController {
     @Param('revId') revId: string,
     @CurrentUser() user: any,
   ) {
-    const revision = await this.pagesService.getRevision(
-      id,
-      revId,
-      user.tenantId,
-    );
+    const revision = await this.pagesService.getRevision(id, revId, user.tenantId);
     return { data: revision };
   }
 
@@ -115,19 +106,14 @@ export class PagesController {
     @Param('revId') revId: string,
     @CurrentUser() user: any,
   ) {
-    const page = await this.pagesService.rollback(
-      id,
-      revId,
-      user.id,
-      user.tenantId,
-    );
+    const page = await this.pagesService.rollback(id, revId, user.id, user.tenantId, user.roles);
     return { data: page };
   }
 
   @Delete(':id')
-  @Roles('admin')
+  @Roles('admin', 'editor')
   async remove(@Param('id') id: string, @CurrentUser() user: any) {
-    await this.pagesService.softDelete(id, user.tenantId);
+    await this.pagesService.softDelete(id, user.tenantId, user.id, user.roles);
     return { data: { message: 'Page deleted successfully' } };
   }
 

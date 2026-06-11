@@ -2,7 +2,7 @@
   <div class="page-edit" v-if="pageStore.currentPage">
     <!-- Draft recovery banner -->
     <div v-if="hasDraft" class="draft-banner">
-      <span>A local draft was found. Would you like to restore it?</span>
+      <span>A local draft was found for this page. Restore it?</span>
       <button @click="restoreDraft">Restore</button>
       <button @click="discardDraft">Discard</button>
     </div>
@@ -20,7 +20,9 @@
         </span>
         <span v-if="autoSave.error.value" class="save-error">{{ autoSave.error.value }}</span>
         <button class="btn" @click="$router.back()">Cancel</button>
-        <button class="btn-primary" @click="handleSave">Save</button>
+        <button class="btn-primary" @click="handleSave" :disabled="saving">
+          {{ saving ? 'Saving...' : 'Save' }}
+        </button>
       </div>
     </div>
 
@@ -47,21 +49,27 @@ const pageStore = usePageStore();
 
 const pageName = ref('');
 const content = ref('');
+const saving = ref(false);
 
+// Use slug from route params — always available immediately, no async dependency
+const pageSlug = computed(() => route.params.slug as string);
 const pageId = computed(() => pageStore.currentPage?.id || '');
-const pageIdRef = computed(() => pageId.value);
 
-const autoSave = useAutoSave(pageIdRef, () => ({
+const autoSave = useAutoSave(pageId, pageSlug, () => ({
   contentHtml: content.value,
 }));
 
-const { hasDraft, acceptDraft, discardDraft: doDiscard } = useDraftRecovery(pageIdRef);
+// Draft recovery keyed by slug so it works before page data loads
+const { hasDraft, acceptDraft, discardDraft } = useDraftRecovery(pageSlug);
 
 onMounted(async () => {
-  await pageStore.fetchPage(route.params.slug as string);
+  await pageStore.fetchPage(pageSlug.value);
   if (pageStore.currentPage) {
     pageName.value = pageStore.currentPage.name;
-    content.value = pageStore.currentPage.contentHtml || '';
+    // Only load server content if no local draft is pending
+    if (!hasDraft.value) {
+      content.value = pageStore.currentPage.contentHtml || '';
+    }
   }
 });
 
@@ -80,19 +88,24 @@ function restoreDraft() {
   }
 }
 
-function discardDraft() {
-  doDiscard();
-}
-
 async function handleSave() {
   if (!pageStore.currentPage) return;
-  await pageStore.savePage(pageStore.currentPage.id, {
-    name: pageName.value,
-    contentHtml: content.value,
-    version: pageStore.currentPage.version,
-  });
-  autoSave.clearDraft();
-  router.push(`/pages/${pageStore.currentPage.slug}`);
+  saving.value = true;
+  try {
+    await pageStore.savePage(pageStore.currentPage.id, {
+      name: pageName.value,
+      contentHtml: content.value,
+      version: pageStore.currentPage.version,
+    });
+    autoSave.clearDraft();
+    router.push(`/pages/${pageStore.currentPage.slug}`);
+  } catch (e: any) {
+    if (e.response?.status === 409) {
+      alert('Conflict: this page was modified by another user. Please reload and try again.');
+    }
+  } finally {
+    saving.value = false;
+  }
 }
 
 function formatTime(d: Date) {
@@ -167,6 +180,9 @@ function formatTime(d: Date) {
   border-radius: 4px;
   cursor: pointer;
   font-weight: 600;
+}
+.btn-primary:disabled {
+  opacity: 0.6;
 }
 .loading {
   text-align: center;

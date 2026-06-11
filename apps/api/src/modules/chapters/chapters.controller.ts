@@ -26,10 +26,7 @@ export class ChaptersController {
     @CurrentUser() user: any,
   ) {
     const chapter = await this.chaptersService.create(
-      bookId,
-      dto,
-      user.id,
-      user.tenantId,
+      bookId, dto, user.id, user.tenantId, user.roles,
     );
     return { data: chapter };
   }
@@ -40,15 +37,16 @@ export class ChaptersController {
     @CurrentUser() user: any,
   ) {
     const chapters = await this.chaptersService.findByBook(
-      bookId,
-      user.tenantId,
+      bookId, user.tenantId, user.id, user.roles,
     );
     return { data: chapters };
   }
 
   @Get('chapters/:id')
   async findById(@Param('id') id: string, @CurrentUser() user: any) {
-    const chapter = await this.chaptersService.findById(id, user.tenantId);
+    const chapter = await this.chaptersService.findById(
+      id, user.tenantId, user.id, user.roles,
+    );
     return { data: chapter };
   }
 
@@ -60,10 +58,7 @@ export class ChaptersController {
     @CurrentUser() user: any,
   ) {
     const chapter = await this.chaptersService.update(
-      id,
-      dto,
-      user.id,
-      user.tenantId,
+      id, dto, user.id, user.tenantId, user.roles,
     );
     return { data: chapter };
   }
@@ -75,14 +70,16 @@ export class ChaptersController {
     @Body() dto: ReorderChaptersDto,
     @CurrentUser() user: any,
   ) {
-    await this.chaptersService.reorder(bookId, dto.orderedIds, user.tenantId);
+    await this.chaptersService.reorder(
+      bookId, dto.orderedIds, user.tenantId, user.id, user.roles,
+    );
     return { data: { message: 'Chapters reordered successfully' } };
   }
 
   @Delete('chapters/:id')
-  @Roles('admin')
+  @Roles('admin', 'editor')
   async remove(@Param('id') id: string, @CurrentUser() user: any) {
-    await this.chaptersService.softDelete(id, user.tenantId);
+    await this.chaptersService.softDelete(id, user.tenantId, user.id, user.roles);
     return { data: { message: 'Chapter deleted successfully' } };
   }
 
