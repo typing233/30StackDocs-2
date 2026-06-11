@@ -8,6 +8,7 @@ import jwtConfig from './config/jwt.config';
 import throttleConfig from './config/throttle.config';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
+import { PermissionsGuard } from './common/guards/permissions.guard';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { AuditLogInterceptor } from './common/interceptors/audit-log.interceptor';
 import { AuthModule } from './modules/auth/auth.module';
@@ -62,6 +63,7 @@ import { PagesModule } from './modules/pages/pages.module';
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: PermissionsGuard },
     { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
   ],
 })

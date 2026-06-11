@@ -38,7 +38,10 @@ export class PermissionsService {
 
   /**
    * Check if a user has permission on a specific entity.
-   * Supports hierarchical lookup: page -> chapter -> book.
+   * Resolution order:
+   * 1. Direct entity_permissions for this user or their role IDs
+   * 2. Inherited entity_permissions from parent entities
+   * 3. Role-based defaults (viewer=view, editor=view+edit, admin=all)
    */
   async hasPermission(
     userId: string,
@@ -50,68 +53,77 @@ export class PermissionsService {
   ): Promise<boolean> {
     const userRoles = await this.findRolesForUser(userId, tenantId);
     const roleIds = userRoles.map((r) => r.id);
+    const roleNames = userRoles.map((r) => r.name);
 
-    // Check direct user permission on this entity
-    const directPerm = await this.permRepo
-      .createQueryBuilder('ep')
-      .where('ep.tenantId = :tenantId', { tenantId })
-      .andWhere('ep.entityType = :entityType', { entityType })
-      .andWhere('ep.entityId = :entityId', { entityId })
-      .andWhere('ep.action IN (:...actions)', { actions: requiredActions })
-      .andWhere(
-        '(ep.userId = :userId' +
-        (roleIds.length > 0 ? ' OR ep.roleId IN (:...roleIds)' : '') +
-        ')',
-        { userId, ...(roleIds.length > 0 ? { roleIds } : {}) },
-      )
-      .getOne();
+    // Step 1: Check direct entity permission for user or user's roles
+    if (await this.checkEntityPermission(tenantId, entityType, entityId, requiredActions, userId, roleIds)) {
+      return true;
+    }
 
-    if (directPerm) return true;
-
-    // Check inherited permissions from parent entities
+    // Step 2: Check inherited permissions from parent entities
     if (parentEntities && parentEntities.length > 0) {
       for (const parent of parentEntities) {
-        const parentPerm = await this.permRepo
-          .createQueryBuilder('ep')
-          .where('ep.tenantId = :tenantId', { tenantId })
-          .andWhere('ep.entityType = :pType', { pType: parent.type })
-          .andWhere('ep.entityId = :pId', { pId: parent.id })
-          .andWhere('ep.action IN (:...actions)', { actions: requiredActions })
-          .andWhere(
-            '(ep.userId = :userId' +
-            (roleIds.length > 0 ? ' OR ep.roleId IN (:...roleIds)' : '') +
-            ')',
-            { userId, ...(roleIds.length > 0 ? { roleIds } : {}) },
-          )
-          .getOne();
-        if (parentPerm) return true;
+        if (await this.checkEntityPermission(tenantId, parent.type, parent.id, requiredActions, userId, roleIds)) {
+          return true;
+        }
       }
     }
 
-    // Fallback: check role-based default permission (viewer can view, editor can edit)
-    const roleNames = userRoles.map((r) => r.name);
-    if (requiredActions.some((a) => a === 'view') && roleNames.length > 0) {
-      return true; // any role can view by default
-    }
-    if (
-      requiredActions.some((a) => ['edit', 'create'].includes(a)) &&
-      roleNames.some((r) => ['admin', 'editor'].includes(r))
-    ) {
-      return true;
-    }
-    if (
-      requiredActions.some((a) => a === 'delete') &&
-      roleNames.includes('admin')
-    ) {
-      return true;
+    // Step 3: Fall back to role-based defaults
+    return this.checkRoleDefault(roleNames, requiredActions);
+  }
+
+  private async checkEntityPermission(
+    tenantId: string,
+    entityType: string,
+    entityId: string,
+    actions: string[],
+    userId: string,
+    userRoleIds: string[],
+  ): Promise<boolean> {
+    const qb = this.permRepo
+      .createQueryBuilder('ep')
+      .where('ep."tenantId" = :tenantId', { tenantId })
+      .andWhere('ep."entityType" = :entityType', { entityType })
+      .andWhere('ep."entityId" = :entityId', { entityId })
+      .andWhere('ep.action IN (:...actions)', { actions });
+
+    // Must match either the user directly OR one of the user's actual roles
+    if (userRoleIds.length > 0) {
+      qb.andWhere(
+        '(ep."userId" = :userId OR ep."roleId" IN (:...userRoleIds))',
+        { userId, userRoleIds },
+      );
+    } else {
+      qb.andWhere('ep."userId" = :userId', { userId });
     }
 
+    const found = await qb.getOne();
+    return !!found;
+  }
+
+  private checkRoleDefault(roleNames: string[], requiredActions: string[]): boolean {
+    for (const action of requiredActions) {
+      switch (action) {
+        case 'view':
+          // Any assigned role grants view by default
+          if (roleNames.length > 0) return true;
+          break;
+        case 'edit':
+        case 'create':
+          if (roleNames.includes('admin') || roleNames.includes('editor')) return true;
+          break;
+        case 'delete':
+          if (roleNames.includes('admin')) return true;
+          break;
+      }
+    }
     return false;
   }
 
   /**
    * Apply permission-based filtering to a query builder for listing entities.
-   * Admin sees all; others see entities they own or have explicit permission on.
+   * Only matches permissions granted to this specific user or their actual role IDs.
    */
   applyPermissionFilter<T>(
     qb: SelectQueryBuilder<T>,
@@ -120,39 +132,53 @@ export class PermissionsService {
     tenantId: string,
     userRoles: string[],
     entityType: string,
+    userRoleIds?: string[],
   ): SelectQueryBuilder<T> {
     if (userRoles.includes('admin')) {
       return qb;
     }
 
-    if (userRoles.includes('editor')) {
-      // Editors see everything they created + anything with explicit permission
-      qb.andWhere(
-        `(${alias}."createdBy" = :userId OR EXISTS (` +
-        `SELECT 1 FROM entity_permissions ep ` +
-        `WHERE ep."entityType" = :entityType ` +
-        `AND ep."entityId" = ${alias}.id ` +
-        `AND ep."tenantId" = :tenantId ` +
-        `AND ep.action IN ('view', 'edit') ` +
-        `AND (ep."userId" = :userId OR ep."roleId" IS NOT NULL)` +
-        `))`,
-        { userId, entityType, tenantId },
-      );
+    // Editors can view all by role default — no entity-level filter needed for read
+    if (userRoles.includes('editor') || userRoles.includes('viewer')) {
       return qb;
     }
 
-    // Viewer: only see entities with explicit view permission or own entities
-    qb.andWhere(
-      `(${alias}."createdBy" = :userId OR EXISTS (` +
-      `SELECT 1 FROM entity_permissions ep ` +
-      `WHERE ep."entityType" = :entityType ` +
-      `AND ep."entityId" = ${alias}.id ` +
-      `AND ep."tenantId" = :tenantId ` +
-      `AND ep.action = 'view' ` +
-      `AND (ep."userId" = :userId OR ep."roleId" IS NOT NULL)` +
-      `))`,
-      { userId, entityType, tenantId },
-    );
+    // Users with no recognized role: only see own + explicitly permitted
+    if (userRoleIds && userRoleIds.length > 0) {
+      qb.andWhere(
+        `(${alias}."createdBy" = :filterUserId OR EXISTS (` +
+        `SELECT 1 FROM entity_permissions ep ` +
+        `WHERE ep."entityType" = :filterEntityType ` +
+        `AND ep."entityId" = ${alias}.id ` +
+        `AND ep."tenantId" = :filterTenantId ` +
+        `AND ep.action IN ('view', 'edit') ` +
+        `AND (ep."userId" = :filterUserId OR ep."roleId" IN (:...filterRoleIds))` +
+        `))`,
+        {
+          filterUserId: userId,
+          filterEntityType: entityType,
+          filterTenantId: tenantId,
+          filterRoleIds: userRoleIds,
+        },
+      );
+    } else {
+      qb.andWhere(
+        `(${alias}."createdBy" = :filterUserId OR EXISTS (` +
+        `SELECT 1 FROM entity_permissions ep ` +
+        `WHERE ep."entityType" = :filterEntityType ` +
+        `AND ep."entityId" = ${alias}.id ` +
+        `AND ep."tenantId" = :filterTenantId ` +
+        `AND ep.action IN ('view', 'edit') ` +
+        `AND ep."userId" = :filterUserId` +
+        `))`,
+        {
+          filterUserId: userId,
+          filterEntityType: entityType,
+          filterTenantId: tenantId,
+        },
+      );
+    }
+
     return qb;
   }
 

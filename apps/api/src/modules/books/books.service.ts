@@ -2,7 +2,6 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
-  ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, IsNull } from 'typeorm';
@@ -49,7 +48,7 @@ export class BooksService {
       .where('book.tenantId = :tenantId', { tenantId })
       .andWhere('book.deletedAt IS NULL');
 
-    // Apply permission-based filtering
+    // Apply permission-based filtering for list
     qb = this.permissionsService.applyPermissionFilter(
       qb, 'book', userId, tenantId, userRoles, 'book',
     );
@@ -77,20 +76,12 @@ export class BooksService {
     };
   }
 
-  async findBySlug(slug: string, tenantId: string, userId: string, userRoles: string[]) {
+  async findByIdWithRelations(id: string, tenantId: string) {
     const book = await this.bookRepo.findOne({
-      where: { slug, tenantId },
+      where: { id, tenantId },
       relations: ['chapters', 'chapters.pages', 'directPages'],
     });
     if (!book) throw new NotFoundException('Book not found');
-
-    // Check read permission
-    const canView = await this.permissionsService.hasPermission(
-      userId, tenantId, 'book', book.id, ['view'],
-    );
-    if (!canView && !userRoles.includes('admin') && book.createdBy !== userId) {
-      throw new ForbiddenException('No permission to view this book');
-    }
     return book;
   }
 
@@ -102,16 +93,8 @@ export class BooksService {
     return book;
   }
 
-  async update(id: string, dto: UpdateBookDto, userId: string, tenantId: string, userRoles: string[]) {
+  async update(id: string, dto: UpdateBookDto, userId: string, tenantId: string) {
     const book = await this.findById(id, tenantId);
-
-    // Check edit permission
-    const canEdit = await this.permissionsService.hasPermission(
-      userId, tenantId, 'book', id, ['edit'],
-    );
-    if (!canEdit && !userRoles.includes('admin') && book.createdBy !== userId) {
-      throw new ForbiddenException('No permission to edit this book');
-    }
 
     if (book.version !== dto.version) {
       throw new ConflictException(
@@ -131,14 +114,7 @@ export class BooksService {
     return this.bookRepo.save(book);
   }
 
-  async softDelete(id: string, tenantId: string, userId: string, userRoles: string[]) {
-    const canDelete = await this.permissionsService.hasPermission(
-      userId, tenantId, 'book', id, ['delete'],
-    );
-    if (!canDelete && !userRoles.includes('admin')) {
-      throw new ForbiddenException('No permission to delete this book');
-    }
-
+  async softDelete(id: string, tenantId: string) {
     await this.dataSource.transaction(async (manager) => {
       const book = await manager.findOne(Book, {
         where: { id, tenantId },
@@ -178,9 +154,7 @@ export class BooksService {
         .update(Chapter)
         .set({ deletedAt: null as any })
         .where('"bookId" = :id AND "tenantId" = :tenantId AND "deletedAt" = :deletedAt', {
-          id,
-          tenantId,
-          deletedAt,
+          id, tenantId, deletedAt,
         })
         .execute();
 
@@ -189,9 +163,7 @@ export class BooksService {
         .update(Page)
         .set({ deletedAt: null as any })
         .where('"bookId" = :id AND "tenantId" = :tenantId AND "deletedAt" = :deletedAt', {
-          id,
-          tenantId,
-          deletedAt,
+          id, tenantId, deletedAt,
         })
         .execute();
 

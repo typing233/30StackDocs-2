@@ -14,6 +14,7 @@ import { UpdateBookDto } from './dto/update-book.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { CheckPermission } from '../../common/decorators/permissions.decorator';
 
 @Controller('api/books')
 export class BooksController {
@@ -31,27 +32,30 @@ export class BooksController {
     return this.booksService.findAll(user.tenantId, query, user.id, user.roles);
   }
 
-  @Get(':slug')
-  async findBySlug(@Param('slug') slug: string, @CurrentUser() user: any) {
-    const book = await this.booksService.findBySlug(slug, user.tenantId, user.id, user.roles);
+  @Get(':id')
+  @CheckPermission({ entityType: 'book', action: 'view', idParam: 'id' })
+  async findById(@Param('id') id: string, @CurrentUser() user: any) {
+    const book = await this.booksService.findByIdWithRelations(id, user.tenantId);
     return { data: book };
   }
 
   @Put(':id')
   @Roles('admin', 'editor')
+  @CheckPermission({ entityType: 'book', action: 'edit', idParam: 'id' })
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateBookDto,
     @CurrentUser() user: any,
   ) {
-    const book = await this.booksService.update(id, dto, user.id, user.tenantId, user.roles);
+    const book = await this.booksService.update(id, dto, user.id, user.tenantId);
     return { data: book };
   }
 
   @Delete(':id')
   @Roles('admin', 'editor')
+  @CheckPermission({ entityType: 'book', action: 'delete', idParam: 'id' })
   async remove(@Param('id') id: string, @CurrentUser() user: any) {
-    await this.booksService.softDelete(id, user.tenantId, user.id, user.roles);
+    await this.booksService.softDelete(id, user.tenantId);
     return { data: { message: 'Book deleted successfully' } };
   }
 
