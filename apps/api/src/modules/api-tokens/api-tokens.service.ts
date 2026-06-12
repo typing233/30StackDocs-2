@@ -6,6 +6,14 @@ import { IdempotencyKey } from './entities/idempotency-key.entity';
 import { RedisService } from '../redis/redis.service';
 import * as crypto from 'crypto';
 
+export interface ValidatedToken {
+  userId: string;
+  tenantId: string;
+  scopes: string[];
+  tokenId: string;
+  rateLimit: number;
+}
+
 @Injectable()
 export class ApiTokensService {
   constructor(
@@ -43,7 +51,7 @@ export class ApiTokensService {
     return { token: `sd_${rawToken}`, apiToken: saved };
   }
 
-  async validateToken(rawToken: string): Promise<{ userId: string; tenantId: string; scopes: string[]; tokenId: string }> {
+  async validateToken(rawToken: string): Promise<ValidatedToken> {
     const tokenValue = rawToken.startsWith('sd_') ? rawToken.slice(3) : rawToken;
     const tokenHash = crypto.createHash('sha256').update(tokenValue).digest('hex');
 
@@ -52,7 +60,6 @@ export class ApiTokensService {
     if (apiToken.revokedAt) throw new UnauthorizedException('Token revoked');
     if (apiToken.expiresAt && apiToken.expiresAt < new Date()) throw new UnauthorizedException('Token expired');
 
-    // Update last used
     this.tokenRepo.update(apiToken.id, { lastUsedAt: new Date() }).catch(() => {});
 
     return {
@@ -60,6 +67,7 @@ export class ApiTokensService {
       tenantId: apiToken.tenantId,
       scopes: apiToken.scopes,
       tokenId: apiToken.id,
+      rateLimit: apiToken.rateLimit,
     };
   }
 
@@ -77,7 +85,6 @@ export class ApiTokensService {
 
     if (count >= rateLimit) return false;
 
-    // Increment with TTL of 60 seconds
     await this.redis.set(key, String(count + 1), 60);
     return true;
   }
@@ -96,7 +103,6 @@ export class ApiTokensService {
     await this.tokenRepo.update(id, { revokedAt: new Date() });
   }
 
-  // Idempotency key management
   async getIdempotencyResponse(key: string, tenantId: string): Promise<{ statusCode: number; body: any } | null> {
     const existing = await this.idempotencyRepo.findOne({
       where: { key, tenantId },
@@ -117,7 +123,7 @@ export class ApiTokensService {
     statusCode: number,
     body: any,
   ): Promise<void> {
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await this.idempotencyRepo.save({
       key,
       tenantId,

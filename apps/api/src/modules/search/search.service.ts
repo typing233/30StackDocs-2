@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, SelectQueryBuilder } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Page } from '../pages/entities/page.entity';
 import { Book } from '../books/entities/book.entity';
 import { PermissionsService } from '../permissions/permissions.service';
@@ -50,168 +50,238 @@ export class SearchService {
       return { data: [], meta: { total: 0, page, limit } };
     }
 
-    const tsQuery = this.buildTsQuery(query);
-    const cacheKey = `search:${tenantId}:${userId}:${tsQuery}:${page}:${limit}:${entityTypes?.join(',') || ''}:${bookId || ''}`;
-
+    const cacheKey = `search:${tenantId}:${userId}:${query}:${page}:${limit}:${entityTypes?.join(',') || ''}:${bookId || ''}`;
     const cached = await this.redis.get(cacheKey);
     if (cached) {
       return JSON.parse(cached);
     }
 
-    const results: SearchResult[] = [];
-    let total = 0;
+    // Use a UNION ALL query with LIMIT/OFFSET at the SQL level
+    const likePattern = `%${query.replace(/[%_\\]/g, '\\$&')}%`;
+    const tsQuery = this.buildTsQuery(query);
+    const offset = (page - 1) * limit;
 
     const searchPages = !entityTypes || entityTypes.includes('page');
     const searchBooks = !entityTypes || entityTypes.includes('book');
 
+    const parts: string[] = [];
+    const params: any[] = [];
+    let paramIdx = 1;
+
     if (searchPages) {
-      const pageResults = await this.searchPages(tsQuery, query, tenantId, userId, userRoles, userRoleIds, bookId);
-      results.push(...pageResults.items);
-      total += pageResults.total;
+      // Permission subquery for pages
+      const permFilter = this.buildPermissionSubquery('p', userId, tenantId, userRoles, userRoleIds, 'page');
+
+      parts.push(`
+        SELECT
+          p.id,
+          'page' AS type,
+          p."name" AS title,
+          p.slug,
+          p."bookId" AS "bookId",
+          p."chapterId" AS "chapterId",
+          b."name" AS "bookName",
+          c."name" AS "chapterName",
+          (
+            CASE WHEN p."searchVector" @@ to_tsquery('simple', $${paramIdx})
+              THEN ts_rank(p."searchVector", to_tsquery('simple', $${paramIdx}))
+              ELSE 0
+            END
+            + CASE WHEN p."name" ILIKE $${paramIdx + 1} THEN 0.5 ELSE 0 END
+          ) AS rank,
+          ts_headline('simple', COALESCE(p."name", ''), to_tsquery('simple', $${paramIdx}),
+            'StartSel=<mark>, StopSel=</mark>, MaxWords=35, MinWords=10, HighlightAll=true') AS title_hl,
+          ts_headline('simple',
+            COALESCE(p."contentMarkdown", regexp_replace(COALESCE(p."contentHtml", ''), '<[^>]*>', ' ', 'g'), ''),
+            to_tsquery('simple', $${paramIdx}),
+            'StartSel=<mark>, StopSel=</mark>, MaxWords=60, MinWords=20') AS content_hl
+        FROM pages p
+        LEFT JOIN books b ON b.id = p."bookId"
+        LEFT JOIN chapters c ON c.id = p."chapterId"
+        WHERE p."tenantId" = $${paramIdx + 2}
+          AND p."deletedAt" IS NULL
+          AND (
+            p."searchVector" @@ to_tsquery('simple', $${paramIdx})
+            OR p."name" ILIKE $${paramIdx + 1}
+            OR p."contentMarkdown" ILIKE $${paramIdx + 1}
+            OR p."contentHtml" ILIKE $${paramIdx + 1}
+          )
+          ${bookId ? `AND p."bookId" = $${paramIdx + 3}` : ''}
+          ${permFilter.sql}
+      `);
+      params.push(tsQuery, likePattern, tenantId);
+      paramIdx += 3;
+      if (bookId) { params.push(bookId); paramIdx++; }
+      params.push(...permFilter.params);
+      paramIdx += permFilter.params.length;
     }
 
     if (searchBooks && !bookId) {
-      const bookResults = await this.searchBooks(tsQuery, query, tenantId, userId, userRoles, userRoleIds);
-      results.push(...bookResults.items);
-      total += bookResults.total;
+      const permFilter = this.buildPermissionSubquery('bk', userId, tenantId, userRoles, userRoleIds, 'book');
+
+      parts.push(`
+        SELECT
+          bk.id,
+          'book' AS type,
+          bk."name" AS title,
+          bk.slug,
+          NULL AS "bookId",
+          NULL AS "chapterId",
+          NULL AS "bookName",
+          NULL AS "chapterName",
+          (
+            CASE WHEN bk."searchVector" @@ to_tsquery('simple', $${paramIdx})
+              THEN ts_rank(bk."searchVector", to_tsquery('simple', $${paramIdx})) * 1.5
+              ELSE 0
+            END
+            + CASE WHEN bk."name" ILIKE $${paramIdx + 1} THEN 0.8 ELSE 0 END
+          ) AS rank,
+          ts_headline('simple', COALESCE(bk."name", ''), to_tsquery('simple', $${paramIdx}),
+            'StartSel=<mark>, StopSel=</mark>, MaxWords=35, MinWords=10, HighlightAll=true') AS title_hl,
+          ts_headline('simple', COALESCE(bk."description", ''), to_tsquery('simple', $${paramIdx}),
+            'StartSel=<mark>, StopSel=</mark>, MaxWords=60, MinWords=20') AS content_hl
+        FROM books bk
+        WHERE bk."tenantId" = $${paramIdx + 2}
+          AND bk."deletedAt" IS NULL
+          AND (
+            bk."searchVector" @@ to_tsquery('simple', $${paramIdx})
+            OR bk."name" ILIKE $${paramIdx + 1}
+            OR bk."description" ILIKE $${paramIdx + 1}
+          )
+          ${permFilter.sql}
+      `);
+      params.push(tsQuery, likePattern, tenantId);
+      paramIdx += 3;
+      params.push(...permFilter.params);
+      paramIdx += permFilter.params.length;
     }
 
-    // Sort by rank (relevance)
-    results.sort((a, b) => b.rank - a.rank);
+    if (parts.length === 0) {
+      return { data: [], meta: { total: 0, page, limit } };
+    }
 
-    const offset = (page - 1) * limit;
-    const paginatedResults = results.slice(offset, offset + limit);
+    const unionSql = parts.join(' UNION ALL ');
 
-    const response = { data: paginatedResults, meta: { total, page, limit } };
+    // Count query
+    const countSql = `SELECT COUNT(*) AS total FROM (${unionSql}) AS _search`;
+    const countResult = await this.pageRepo.query(countSql, params);
+    const total = parseInt(countResult[0]?.total || '0', 10);
+
+    if (total === 0) {
+      const response = { data: [], meta: { total: 0, page, limit } };
+      await this.redis.set(cacheKey, JSON.stringify(response), 60);
+      return response;
+    }
+
+    // Data query with ORDER BY + LIMIT/OFFSET at SQL level
+    const dataSql = `SELECT * FROM (${unionSql}) AS _search ORDER BY rank DESC LIMIT ${limit} OFFSET ${offset}`;
+    const rows = await this.pageRepo.query(dataSql, params);
+
+    const results: SearchResult[] = rows.map((row: any) => ({
+      id: row.id,
+      type: row.type as 'page' | 'book',
+      title: row.title,
+      slug: row.slug,
+      snippet: row.content_hl || '',
+      bookId: row.bookId || undefined,
+      bookName: row.bookName || undefined,
+      chapterId: row.chapterId || undefined,
+      chapterName: row.chapterName || undefined,
+      rank: parseFloat(row.rank) || 0,
+      highlights: [row.title_hl, row.content_hl].filter(Boolean),
+    }));
+
+    const response = { data: results, meta: { total, page, limit } };
     await this.redis.set(cacheKey, JSON.stringify(response), 60);
     return response;
   }
 
-  private async searchPages(
-    tsQuery: string,
-    rawQuery: string,
-    tenantId: string,
-    userId: string,
-    userRoles: string[],
-    userRoleIds: string[],
-    bookId?: string,
-  ): Promise<{ items: SearchResult[]; total: number }> {
-    const qb = this.pageRepo
-      .createQueryBuilder('p')
-      .select([
-        'p.id',
-        'p.name',
-        'p.slug',
-        'p.bookId',
-        'p.chapterId',
-      ])
-      .addSelect(`ts_rank(p."searchVector", to_tsquery('simple', :tsQuery))`, 'rank')
-      .addSelect(
-        `ts_headline('simple', COALESCE(p."name", ''), to_tsquery('simple', :tsQuery), 'StartSel=<mark>, StopSel=</mark>, MaxWords=50, MinWords=20')`,
-        'title_highlight',
-      )
-      .addSelect(
-        `ts_headline('simple', COALESCE(p."contentMarkdown", regexp_replace(COALESCE(p."contentHtml", ''), '<[^>]*>', ' ', 'g')), to_tsquery('simple', :tsQuery), 'StartSel=<mark>, StopSel=</mark>, MaxWords=80, MinWords=30')`,
-        'content_highlight',
-      )
-      .leftJoin('books', 'b', 'b.id = p."bookId"')
-      .addSelect('b.name', 'book_name')
-      .leftJoin('chapters', 'c', 'c.id = p."chapterId"')
-      .addSelect('c.name', 'chapter_name')
-      .where('p."tenantId" = :tenantId', { tenantId })
-      .andWhere('p."deletedAt" IS NULL')
-      .andWhere(`p."searchVector" @@ to_tsquery('simple', :tsQuery)`)
-      .setParameter('tsQuery', tsQuery)
-      .orderBy('rank', 'DESC');
+  /**
+   * Build a tsquery string that supports Chinese (CJK unigrams) and western tokens.
+   * Each CJK character becomes its own token; western words use prefix match.
+   * Tokens are joined with OR for broad recall.
+   */
+  private buildTsQuery(query: string): string {
+    const cjkRange = /[一-鿿㐀-䶿豈-﫿]/;
+    const chars = query.trim().split('');
+    const tokens: string[] = [];
+    let western = '';
 
-    if (bookId) {
-      qb.andWhere('p."bookId" = :bookId', { bookId });
+    for (const ch of chars) {
+      if (cjkRange.test(ch)) {
+        if (western.trim()) {
+          tokens.push(this.escapeTsToken(western.trim()));
+          western = '';
+        }
+        tokens.push(this.escapeTsToken(ch));
+      } else if (/\s/.test(ch)) {
+        if (western.trim()) {
+          tokens.push(this.escapeTsToken(western.trim()));
+          western = '';
+        }
+      } else {
+        western += ch;
+      }
+    }
+    if (western.trim()) {
+      tokens.push(this.escapeTsToken(western.trim()));
     }
 
-    // Apply permission filter
-    this.permissionsService.applyPermissionFilter(qb, 'p', userId, tenantId, userRoles, 'page', userRoleIds);
+    if (tokens.length === 0) return "''";
 
-    const total = await qb.getCount();
-    const raw = await qb.getRawMany();
-
-    const items: SearchResult[] = raw.map((row) => ({
-      id: row.p_id,
-      type: 'page' as const,
-      title: row.p_name,
-      slug: row.p_slug,
-      snippet: row.content_highlight || '',
-      bookId: row.p_bookId,
-      bookName: row.book_name,
-      chapterId: row.p_chapterId,
-      chapterName: row.chapter_name,
-      rank: parseFloat(row.rank) * 1.0,
-      highlights: [row.title_highlight, row.content_highlight].filter(Boolean),
-    }));
-
-    return { items, total };
+    // Use prefix matching for each token so partial words match
+    return tokens.map((t) => `${t}:*`).join(' | ');
   }
 
-  private async searchBooks(
-    tsQuery: string,
-    rawQuery: string,
-    tenantId: string,
+  private escapeTsToken(token: string): string {
+    return token.replace(/[&|!():*'\\<>]/g, '');
+  }
+
+  /**
+   * Build a permission filter as raw SQL + params for use in native queries.
+   * Returns empty filter for admin/editor/viewer roles (they can view everything
+   * unless explicitly denied, which we skip for search perf).
+   */
+  private buildPermissionSubquery(
+    alias: string,
     userId: string,
+    tenantId: string,
     userRoles: string[],
     userRoleIds: string[],
-  ): Promise<{ items: SearchResult[]; total: number }> {
-    const qb = this.bookRepo
-      .createQueryBuilder('b')
-      .select(['b.id', 'b.name', 'b.slug'])
-      .addSelect(`ts_rank(b."searchVector", to_tsquery('simple', :tsQuery))`, 'rank')
-      .addSelect(
-        `ts_headline('simple', COALESCE(b."name", ''), to_tsquery('simple', :tsQuery), 'StartSel=<mark>, StopSel=</mark>, MaxWords=50, MinWords=20')`,
-        'title_highlight',
-      )
-      .addSelect(
-        `ts_headline('simple', COALESCE(b."description", ''), to_tsquery('simple', :tsQuery), 'StartSel=<mark>, StopSel=</mark>, MaxWords=80, MinWords=30')`,
-        'desc_highlight',
-      )
-      .where('b."tenantId" = :tenantId', { tenantId })
-      .andWhere('b."deletedAt" IS NULL')
-      .andWhere(`b."searchVector" @@ to_tsquery('simple', :tsQuery)`)
-      .setParameter('tsQuery', tsQuery)
-      .orderBy('rank', 'DESC');
+    entityType: string,
+  ): { sql: string; params: any[] } {
+    if (userRoles.includes('admin') || userRoles.includes('editor') || userRoles.includes('viewer')) {
+      // Check explicit deny
+      return {
+        sql: `AND NOT EXISTS (
+          SELECT 1 FROM entity_permissions ep_d
+          WHERE ep_d."entityType" = '${entityType}'
+            AND ep_d."entityId" = ${alias}.id
+            AND ep_d."tenantId" = '${tenantId}'
+            AND ep_d.effect = 'deny'
+            AND ep_d.action = 'view'
+            AND (ep_d."userId" = '${userId}' ${userRoleIds.length > 0 ? `OR ep_d."roleId" IN (${userRoleIds.map((r) => `'${r}'`).join(',')})` : ''})
+        )`,
+        params: [],
+      };
+    }
 
-    this.permissionsService.applyPermissionFilter(qb, 'b', userId, tenantId, userRoles, 'book', userRoleIds);
-
-    const total = await qb.getCount();
-    const raw = await qb.getRawMany();
-
-    const items: SearchResult[] = raw.map((row) => ({
-      id: row.b_id,
-      type: 'book' as const,
-      title: row.b_name,
-      slug: row.b_slug,
-      snippet: row.desc_highlight || '',
-      rank: parseFloat(row.rank) * 1.5, // Boost book matches
-      highlights: [row.title_highlight, row.desc_highlight].filter(Boolean),
-    }));
-
-    return { items, total };
-  }
-
-  private buildTsQuery(query: string): string {
-    // Support Chinese by splitting on character boundaries and using 'simple' config
-    // Each token is joined with & for AND semantics
-    const tokens = query
-      .trim()
-      .split(/\s+/)
-      .filter((t) => t.length > 0)
-      .map((token) => {
-        // Escape special characters
-        const escaped = token.replace(/[&|!():*'\\]/g, '');
-        if (!escaped) return null;
-        return `${escaped}:*`;
-      })
-      .filter(Boolean);
-
-    if (tokens.length === 0) return '';
-    return tokens.join(' & ');
+    // Users without standard roles: must have explicit grant or be creator
+    return {
+      sql: `AND (
+        ${alias}."createdBy" = '${userId}'
+        OR EXISTS (
+          SELECT 1 FROM entity_permissions ep_a
+          WHERE ep_a."entityType" = '${entityType}'
+            AND ep_a."entityId" = ${alias}.id
+            AND ep_a."tenantId" = '${tenantId}'
+            AND ep_a.effect = 'allow'
+            AND ep_a.action IN ('view', 'edit')
+            AND (ep_a."userId" = '${userId}' ${userRoleIds.length > 0 ? `OR ep_a."roleId" IN (${userRoleIds.map((r) => `'${r}'`).join(',')})` : ''})
+        )
+      )`,
+      params: [],
+    };
   }
 
   async reindexPage(pageId: string): Promise<void> {

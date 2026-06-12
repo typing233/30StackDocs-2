@@ -15,12 +15,38 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ConfigService } from './config.service';
 
 @Controller('api/config')
 export class ConfigController {
   constructor(private readonly configService: ConfigService) {}
+
+  // Public endpoint must be declared before :key to avoid being swallowed by the wildcard
+  @Public()
+  @Get('public/site')
+  async getPublicSiteConfig() {
+    const [siteName, siteLogo, sitePublic, registrationEnabled, language, theme] = await Promise.all([
+      this.configService.get('site.name', undefined),
+      this.configService.get('site.logo', undefined),
+      this.configService.get('site.public', undefined),
+      this.configService.get('site.registration.enabled', undefined),
+      this.configService.get('site.language', undefined),
+      this.configService.get('site.theme', undefined),
+    ]);
+
+    return {
+      data: {
+        name: siteName,
+        logo: siteLogo,
+        public: sitePublic,
+        registrationEnabled,
+        language,
+        theme,
+      },
+    };
+  }
 
   @Get()
   @Roles('admin')
@@ -100,28 +126,4 @@ export class ConfigController {
     return { data: { url } };
   }
 
-  // Public endpoint for site settings (no auth required for public-facing config)
-  @Get('public/site')
-  async getPublicSiteConfig(@CurrentUser() user: any) {
-    const tenantId = user?.tenantId;
-    const [siteName, siteLogo, sitePublic, registrationEnabled, language, theme] = await Promise.all([
-      this.configService.get('site.name', tenantId),
-      this.configService.get('site.logo', tenantId),
-      this.configService.get('site.public', tenantId),
-      this.configService.get('site.registration.enabled', tenantId),
-      this.configService.get('site.language', tenantId),
-      this.configService.get('site.theme', tenantId),
-    ]);
-
-    return {
-      data: {
-        name: siteName,
-        logo: siteLogo,
-        public: sitePublic,
-        registrationEnabled,
-        language,
-        theme,
-      },
-    };
-  }
 }

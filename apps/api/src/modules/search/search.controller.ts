@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { RequireScope } from '../../common/decorators/scope.decorator';
 import { SearchService } from './search.service';
 
 @Controller('api/search')
@@ -15,6 +16,7 @@ export class SearchController {
   constructor(private readonly searchService: SearchService) {}
 
   @Get()
+  @RequireScope('search')
   async search(
     @CurrentUser() user: any,
     @Query('q') query: string,
@@ -40,7 +42,6 @@ export class SearchController {
   @Roles('admin')
   @HttpCode(HttpStatus.ACCEPTED)
   async reindexAll(@CurrentUser() user: any) {
-    // Fire and forget - reindex in background
     this.searchService.reindexAll(user.tenantId).catch(() => {});
     return { message: 'Reindex started' };
   }

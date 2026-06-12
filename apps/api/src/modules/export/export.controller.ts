@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { RequireScope } from '../../common/decorators/scope.decorator';
 import { ExportService } from './export.service';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -22,6 +23,7 @@ export class ExportController {
   constructor(private readonly exportService: ExportService) {}
 
   @Post()
+  @RequireScope('export')
   @HttpCode(HttpStatus.ACCEPTED)
   async createExport(
     @CurrentUser() user: any,
@@ -35,6 +37,7 @@ export class ExportController {
     const job = await this.exportService.createExportJob(
       user.id,
       user.tenantId,
+      user.roles || [],
       body.format,
       body.entityType,
       body.entityId,

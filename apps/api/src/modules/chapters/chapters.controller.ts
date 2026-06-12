@@ -14,6 +14,7 @@ import { ReorderChaptersDto } from './dto/reorder-chapters.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CheckPermission } from '../../common/decorators/permissions.decorator';
+import { RequireScope } from '../../common/decorators/scope.decorator';
 
 @Controller('api')
 export class ChaptersController {
@@ -21,6 +22,7 @@ export class ChaptersController {
 
   @Post('books/:bookId/chapters')
   @Roles('admin', 'editor')
+  @RequireScope('chapters:write')
   @CheckPermission({ entityType: 'book', action: 'edit', idParam: 'bookId' })
   async create(
     @Param('bookId') bookId: string,
@@ -34,6 +36,7 @@ export class ChaptersController {
   }
 
   @Get('books/:bookId/chapters')
+  @RequireScope('chapters:read')
   @CheckPermission({ entityType: 'book', action: 'view', idParam: 'bookId' })
   async findByBook(
     @Param('bookId') bookId: string,
@@ -44,6 +47,7 @@ export class ChaptersController {
   }
 
   @Get('chapters/:id')
+  @RequireScope('chapters:read')
   @CheckPermission({ entityType: 'chapter', action: 'view', idParam: 'id' })
   async findById(@Param('id') id: string, @CurrentUser() user: any) {
     const chapter = await this.chaptersService.findById(id, user.tenantId);
@@ -52,6 +56,7 @@ export class ChaptersController {
 
   @Put('chapters/:id')
   @Roles('admin', 'editor')
+  @RequireScope('chapters:write')
   @CheckPermission({ entityType: 'chapter', action: 'edit', idParam: 'id' })
   async update(
     @Param('id') id: string,
@@ -66,6 +71,7 @@ export class ChaptersController {
 
   @Put('books/:bookId/chapters/reorder')
   @Roles('admin', 'editor')
+  @RequireScope('chapters:write')
   @CheckPermission({ entityType: 'book', action: 'edit', idParam: 'bookId' })
   async reorder(
     @Param('bookId') bookId: string,
@@ -78,6 +84,7 @@ export class ChaptersController {
 
   @Delete('chapters/:id')
   @Roles('admin', 'editor')
+  @RequireScope('chapters:write')
   @CheckPermission({ entityType: 'chapter', action: 'delete', idParam: 'id' })
   async remove(@Param('id') id: string, @CurrentUser() user: any) {
     await this.chaptersService.softDelete(id, user.tenantId);

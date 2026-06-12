@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MulterModule } from '@nestjs/platform-express';
 import { ConfigService } from './config.service';
@@ -7,6 +7,7 @@ import { SystemConfig } from './entities/system-config.entity';
 import { SystemConfigHistory } from './entities/system-config-history.entity';
 import { AuditModule } from '../audit/audit.module';
 
+@Global()
 @Module({
   imports: [
     TypeOrmModule.forFeature([SystemConfig, SystemConfigHistory]),

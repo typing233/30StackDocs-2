@@ -17,6 +17,7 @@ import { AutoSaveDto } from './dto/auto-save.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CheckPermission } from '../../common/decorators/permissions.decorator';
+import { RequireScope } from '../../common/decorators/scope.decorator';
 
 @Controller('api/pages')
 export class PagesController {
@@ -24,6 +25,7 @@ export class PagesController {
 
   @Post()
   @Roles('admin', 'editor')
+  @RequireScope('pages:write')
   @CheckPermission({ entityType: 'book', action: 'edit', idParam: 'bookId', parentType: 'body' })
   async create(@Body() dto: CreatePageDto, @CurrentUser() user: any) {
     const page = await this.pagesService.create(dto, user.id, user.tenantId);
@@ -31,6 +33,7 @@ export class PagesController {
   }
 
   @Get(':slug')
+  @RequireScope('pages:read')
   @CheckPermission({ entityType: 'page', action: 'view', idParam: 'slug', parentType: 'slug' })
   async findBySlug(@Param('slug') slug: string, @CurrentUser() user: any) {
     const page = await this.pagesService.findBySlug(slug, user.tenantId);
@@ -39,6 +42,7 @@ export class PagesController {
 
   @Put(':id')
   @Roles('admin', 'editor')
+  @RequireScope('pages:write')
   @CheckPermission({ entityType: 'page', action: 'edit', idParam: 'id' })
   async update(
     @Param('id') id: string,
@@ -122,6 +126,7 @@ export class PagesController {
 
   @Delete(':id')
   @Roles('admin', 'editor')
+  @RequireScope('pages:write')
   @CheckPermission({ entityType: 'page', action: 'delete', idParam: 'id' })
   async remove(@Param('id') id: string, @CurrentUser() user: any) {
     await this.pagesService.softDelete(id, user.tenantId);

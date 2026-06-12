@@ -20,24 +20,23 @@ export class ApiTokenGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const authHeader = request.headers['authorization'] || '';
 
-    // Only process API token requests (prefix "Bearer sd_")
     if (!authHeader.startsWith('Bearer sd_')) {
-      return true; // Let JWT guard handle it
+      return true;
     }
 
     const token = authHeader.replace('Bearer ', '');
     const tokenData = await this.apiTokensService.validateToken(token);
 
-    // Check rate limit
+    // Use the token's own configured rate limit
     const allowed = await this.apiTokensService.checkRateLimit(
       tokenData.tokenId,
-      60, // default; ideally loaded from token
+      tokenData.rateLimit,
     );
     if (!allowed) {
       throw new UnauthorizedException('Rate limit exceeded for this API token');
     }
 
-    // Check scope if required
+    // Check scope if the endpoint requires one
     const requiredScope = this.reflector.getAllAndOverride<string>(API_TOKEN_SCOPE_KEY, [
       context.getHandler(),
       context.getClass(),

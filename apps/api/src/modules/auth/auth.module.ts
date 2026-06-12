@@ -10,6 +10,7 @@ import { RefreshToken } from './entities/refresh-token.entity';
 import { UsersModule } from '../users/users.module';
 import { TenantsModule } from '../tenants/tenants.module';
 import { PermissionsModule } from '../permissions/permissions.module';
+import { SystemConfigModule } from '../config/config.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { PermissionsModule } from '../permissions/permissions.module';
     UsersModule,
     TenantsModule,
     PermissionsModule,
+    SystemConfigModule,
   ],
   providers: [AuthService, JwtStrategy],
   controllers: [AuthController],

@@ -29,6 +29,7 @@
     "htmldiff-js": "^1.0.5",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
+    "pdfkit": "^0.14.0",
     "multer": "^1.4.5-lts.1",
     "pg": "^8.11.3",
     "redis": "^4.6.12",

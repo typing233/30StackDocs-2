@@ -37,6 +37,11 @@ export class PermissionsGuard implements CanActivate {
       return true;
     }
 
+    // Anonymous public users are allowed view actions on public site
+    if (user.isAnonymous && meta.action === 'view') {
+      return true;
+    }
+
     if (user.roles?.includes('admin')) {
       return true;
     }

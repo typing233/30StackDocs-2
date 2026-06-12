@@ -34,11 +34,24 @@ export class ExportService {
   async createExportJob(
     userId: string,
     tenantId: string,
+    userRoles: string[],
     format: string,
     entityType: string,
     entityId: string,
     options: Record<string, any> = {},
   ): Promise<ExportJob> {
+    // Permission check: user must have view access to the target entity
+    const hasAccess = await this.permissionsService.hasPermission(
+      userId,
+      tenantId,
+      entityType,
+      entityId,
+      ['view'],
+    );
+    if (!hasAccess && !userRoles.includes('admin')) {
+      throw new ForbiddenException('You do not have permission to export this resource');
+    }
+
     const job = this.jobRepo.create({
       userId,
       tenantId,
@@ -51,7 +64,6 @@ export class ExportService {
     });
     const saved = await this.jobRepo.save(job);
 
-    // Queue the job processing
     this.processJob(saved.id).catch(() => {});
 
     return saved;
@@ -123,7 +135,6 @@ export class ExportService {
       });
 
       if (shouldRetry) {
-        // Retry with exponential backoff
         const delay = Math.pow(2, job.attempts) * 1000;
         setTimeout(() => this.processJob(jobId), delay);
       }
@@ -146,35 +157,31 @@ export class ExportService {
 
     await this.jobRepo.update(job.id, { progress: 30 });
 
-    let content: string;
-    let ext: string;
+    let filePath: string;
 
     switch (job.format) {
-      case 'markdown':
-        content = this.generateBookMarkdown(book, chapters, pages);
-        ext = 'md';
+      case 'markdown': {
+        const content = this.generateBookMarkdown(book, chapters, pages);
+        filePath = this.writeFile(job.tenantId, `${book.slug}-${Date.now()}.md`, content);
         break;
-      case 'html':
-        content = this.generateBookHtml(book, chapters, pages, job.options);
-        ext = 'html';
+      }
+      case 'html': {
+        const content = this.generateBookHtml(book, chapters, pages, job.options);
+        filePath = this.writeFile(job.tenantId, `${book.slug}-${Date.now()}.html`, content);
         break;
-      case 'pdf':
-        content = this.generateBookHtml(book, chapters, pages, job.options);
-        ext = 'html'; // PDF rendering done client-side or via headless browser
+      }
+      case 'pdf': {
+        await this.jobRepo.update(job.id, { progress: 50 });
+        const htmlContent = this.generateBookHtml(book, chapters, pages, job.options);
+        filePath = await this.htmlToPdf(job.tenantId, `${book.slug}-${Date.now()}.pdf`, htmlContent);
         break;
+      }
       default:
         throw new Error(`Unsupported format: ${job.format}`);
     }
 
-    await this.jobRepo.update(job.id, { progress: 80 });
-
-    const filename = `${book.slug}-${Date.now()}.${ext}`;
-    const filePath = path.join(EXPORT_DIR, job.tenantId, filename);
-
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, content, 'utf-8');
+    await this.jobRepo.update(job.id, { progress: 90 });
     const fileSize = fs.statSync(filePath).size;
-
     return { filePath, fileSize };
   }
 
@@ -182,45 +189,197 @@ export class ExportService {
     const page = await this.pageRepo.findOne({ where: { id: job.entityId, tenantId: job.tenantId } });
     if (!page) throw new Error('Page not found');
 
-    await this.jobRepo.update(job.id, { progress: 50 });
+    await this.jobRepo.update(job.id, { progress: 40 });
 
-    let content: string;
-    let ext: string;
+    let filePath: string;
 
     switch (job.format) {
-      case 'markdown':
-        content = this.generatePageMarkdown(page);
-        ext = 'md';
+      case 'markdown': {
+        const content = this.generatePageMarkdown(page);
+        filePath = this.writeFile(job.tenantId, `${page.slug}-${Date.now()}.md`, content);
         break;
-      case 'html':
-        content = this.generatePageHtml(page, job.options);
-        ext = 'html';
+      }
+      case 'html': {
+        const content = this.generatePageHtml(page, job.options);
+        filePath = this.writeFile(job.tenantId, `${page.slug}-${Date.now()}.html`, content);
         break;
-      case 'pdf':
-        content = this.generatePageHtml(page, job.options);
-        ext = 'html';
+      }
+      case 'pdf': {
+        await this.jobRepo.update(job.id, { progress: 60 });
+        const htmlContent = this.generatePageHtml(page, job.options);
+        filePath = await this.htmlToPdf(job.tenantId, `${page.slug}-${Date.now()}.pdf`, htmlContent);
         break;
+      }
       default:
         throw new Error(`Unsupported format: ${job.format}`);
     }
 
-    const filename = `${page.slug}-${Date.now()}.${ext}`;
-    const filePath = path.join(EXPORT_DIR, job.tenantId, filename);
+    const fileSize = fs.statSync(filePath).size;
+    return { filePath, fileSize };
+  }
 
+  private writeFile(tenantId: string, filename: string, content: string): string {
+    const filePath = path.join(EXPORT_DIR, tenantId, filename);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, content, 'utf-8');
-    const fileSize = fs.statSync(filePath).size;
+    return filePath;
+  }
 
-    return { filePath, fileSize };
+  /**
+   * Convert HTML to a real PDF using PDFKit.
+   * Strips HTML tags and renders text content as a properly formatted PDF document.
+   */
+  private async htmlToPdf(tenantId: string, filename: string, html: string): Promise<string> {
+    const PDFDocument = (await import('pdfkit')).default;
+    const filePath = path.join(EXPORT_DIR, tenantId, filename);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
+    return new Promise<string>((resolve, reject) => {
+      const doc = new PDFDocument({
+        size: 'A4',
+        margins: { top: 60, bottom: 60, left: 50, right: 50 },
+        info: {
+          Title: this.extractTitle(html),
+          Creator: 'StackDocs',
+        },
+      });
+
+      const stream = fs.createWriteStream(filePath);
+      doc.pipe(stream);
+
+      // Parse HTML into structured blocks and render to PDF
+      const blocks = this.parseHtmlToBlocks(html);
+      for (const block of blocks) {
+        switch (block.type) {
+          case 'h1':
+            doc.fontSize(22).font('Helvetica-Bold').text(block.text, { align: 'left' });
+            doc.moveDown(0.8);
+            doc.moveTo(doc.x, doc.y).lineTo(doc.x + 495, doc.y).lineWidth(1).stroke('#333333');
+            doc.moveDown(0.8);
+            break;
+          case 'h2':
+            doc.fontSize(17).font('Helvetica-Bold').text(block.text);
+            doc.moveDown(0.5);
+            break;
+          case 'h3':
+            doc.fontSize(14).font('Helvetica-Bold').text(block.text);
+            doc.moveDown(0.3);
+            break;
+          case 'code':
+            doc.fontSize(9).font('Courier').fillColor('#333333')
+              .text(block.text, { indent: 10 });
+            doc.font('Helvetica').fillColor('#000000');
+            doc.moveDown(0.5);
+            break;
+          case 'li':
+            doc.fontSize(11).font('Helvetica').text(`  •  ${block.text}`, { indent: 15 });
+            doc.moveDown(0.2);
+            break;
+          case 'hr':
+            doc.moveDown(0.5);
+            doc.moveTo(doc.x, doc.y).lineTo(doc.x + 495, doc.y).lineWidth(0.5).stroke('#cccccc');
+            doc.moveDown(0.5);
+            break;
+          default:
+            if (block.text.trim()) {
+              doc.fontSize(11).font('Helvetica').text(block.text, { align: 'left', lineGap: 3 });
+              doc.moveDown(0.4);
+            }
+            break;
+        }
+
+        // Add new page if near bottom
+        if (doc.y > 720) {
+          doc.addPage();
+        }
+      }
+
+      doc.end();
+      stream.on('finish', () => resolve(filePath));
+      stream.on('error', reject);
+    });
+  }
+
+  private extractTitle(html: string): string {
+    const match = html.match(/<title>([^<]*)<\/title>/i) || html.match(/<h1[^>]*>([^<]*)<\/h1>/i);
+    return match ? match[1] : 'StackDocs Export';
+  }
+
+  private parseHtmlToBlocks(html: string): Array<{ type: string; text: string }> {
+    const blocks: Array<{ type: string; text: string }> = [];
+    // Remove script/style tags entirely
+    let cleaned = html.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '');
+
+    // Split on block-level tags
+    const blockRegex = /<(h1|h2|h3|h4|h5|h6|p|li|pre|hr|div|section|blockquote|tr)[^>]*>([\s\S]*?)<\/\1>|<hr\s*\/?>/gi;
+    let match: RegExpExecArray | null;
+    let lastIdx = 0;
+
+    while ((match = blockRegex.exec(cleaned)) !== null) {
+      // Capture any text between blocks
+      if (match.index > lastIdx) {
+        const between = this.stripTags(cleaned.slice(lastIdx, match.index)).trim();
+        if (between) blocks.push({ type: 'p', text: between });
+      }
+      lastIdx = match.index + match[0].length;
+
+      if (match[0].match(/^<hr/i)) {
+        blocks.push({ type: 'hr', text: '' });
+        continue;
+      }
+
+      const tag = match[1].toLowerCase();
+      const content = this.stripTags(match[2]).trim();
+      if (!content && tag !== 'hr') continue;
+
+      if (tag === 'pre') {
+        blocks.push({ type: 'code', text: content });
+      } else if (['h1', 'h2', 'h3'].includes(tag)) {
+        blocks.push({ type: tag, text: content });
+      } else if (tag === 'li') {
+        blocks.push({ type: 'li', text: content });
+      } else {
+        blocks.push({ type: 'p', text: content });
+      }
+    }
+
+    // Remaining text after last block
+    if (lastIdx < cleaned.length) {
+      const remaining = this.stripTags(cleaned.slice(lastIdx)).trim();
+      if (remaining) blocks.push({ type: 'p', text: remaining });
+    }
+
+    // If no blocks extracted, just strip all tags and add as paragraphs
+    if (blocks.length === 0) {
+      const text = this.stripTags(cleaned).trim();
+      if (text) {
+        text.split(/\n{2,}/).forEach((para) => {
+          if (para.trim()) blocks.push({ type: 'p', text: para.trim() });
+        });
+      }
+    }
+
+    return blocks;
+  }
+
+  private stripTags(html: string): string {
+    return html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]*>/g, '')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&nbsp;/g, ' ');
   }
 
   private generateBookMarkdown(book: any, chapters: any[], pages: any[]): string {
     const lines: string[] = [];
     lines.push(`# ${book.name}\n`);
     if (book.description) lines.push(`${book.description}\n`);
-    lines.push(`\n---\n\n## Table of Contents\n`);
+    lines.push(`\n---\n\n## 目录\n`);
 
-    // Group pages by chapter
     const chapterPages = new Map<string | null, any[]>();
     for (const page of pages) {
       const key = page.chapterId || null;
@@ -228,7 +387,6 @@ export class ExportService {
       chapterPages.get(key)!.push(page);
     }
 
-    // TOC
     let tocNum = 1;
     const directPages = chapterPages.get(null) || [];
     for (const page of directPages) {
@@ -246,10 +404,9 @@ export class ExportService {
 
     lines.push('\n---\n');
 
-    // Content
     for (const page of directPages) {
       lines.push(`\n## ${page.name}\n`);
-      lines.push(page.contentMarkdown || this.htmlToSimpleText(page.contentHtml || ''));
+      lines.push(page.contentMarkdown || this.stripTags(page.contentHtml || ''));
       lines.push('\n');
     }
 
@@ -258,7 +415,7 @@ export class ExportService {
       const cPages = chapterPages.get(chapter.id) || [];
       for (const page of cPages) {
         lines.push(`\n### ${page.name}\n`);
-        lines.push(page.contentMarkdown || this.htmlToSimpleText(page.contentHtml || ''));
+        lines.push(page.contentMarkdown || this.stripTags(page.contentHtml || ''));
         lines.push('\n');
       }
     }
@@ -267,7 +424,6 @@ export class ExportService {
   }
 
   private generateBookHtml(book: any, chapters: any[], pages: any[], options: Record<string, any> = {}): string {
-    const template = options.template || 'default';
     const chapterPages = new Map<string | null, any[]>();
     for (const page of pages) {
       const key = page.chapterId || null;
@@ -276,11 +432,9 @@ export class ExportService {
     }
 
     const toc: string[] = [];
-    let tocNum = 1;
     const directPages = chapterPages.get(null) || [];
     for (const page of directPages) {
       toc.push(`<li><a href="#page-${page.id}">${page.name}</a></li>`);
-      tocNum++;
     }
     for (const chapter of chapters) {
       toc.push(`<li><strong>${chapter.name}</strong><ul>`);
@@ -331,10 +485,7 @@ export class ExportService {
   }
 
   private generatePageMarkdown(page: any): string {
-    const lines: string[] = [];
-    lines.push(`# ${page.name}\n`);
-    lines.push(page.contentMarkdown || this.htmlToSimpleText(page.contentHtml || ''));
-    return lines.join('\n');
+    return `# ${page.name}\n\n${page.contentMarkdown || this.stripTags(page.contentHtml || '')}`;
   }
 
   private generatePageHtml(page: any, options: Record<string, any> = {}): string {
@@ -355,9 +506,5 @@ export class ExportService {
   ${page.contentHtml || ''}
 </body>
 </html>`;
-  }
-
-  private htmlToSimpleText(html: string): string {
-    return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
   }
 }
