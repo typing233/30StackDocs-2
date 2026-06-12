@@ -3,10 +3,19 @@
     <header class="app-header">
       <div class="header-left">
         <router-link to="/books" class="logo">StackDocs</router-link>
+        <nav class="main-nav">
+          <router-link to="/books">书籍</router-link>
+          <router-link to="/search">搜索</router-link>
+          <template v-if="isAdmin">
+            <router-link to="/admin/config">配置</router-link>
+            <router-link to="/admin/permissions">权限</router-link>
+            <router-link to="/admin/tokens">令牌</router-link>
+          </template>
+        </nav>
       </div>
       <div class="header-right">
         <span class="user-name">{{ authStore.user?.name || 'User' }}</span>
-        <button class="btn-logout" @click="handleLogout">Logout</button>
+        <button class="btn-logout" @click="handleLogout">退出</button>
       </div>
     </header>
     <main class="app-main">
@@ -16,11 +25,14 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import { useAuthStore } from '@/stores/auth.store';
 import { useRouter } from 'vue-router';
 
 const authStore = useAuthStore();
 const router = useRouter();
+
+const isAdmin = computed(() => authStore.user?.roles?.includes('admin'));
 
 function handleLogout() {
   authStore.logout();
@@ -42,11 +54,33 @@ function handleLogout() {
   background: #1a1a2e;
   color: #fff;
 }
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+}
 .logo {
   font-size: 1.25rem;
   font-weight: bold;
   color: #fff;
   text-decoration: none;
+}
+.main-nav {
+  display: flex;
+  gap: 1rem;
+}
+.main-nav a {
+  color: rgba(255,255,255,0.7);
+  text-decoration: none;
+  font-size: 0.875rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  transition: color 0.2s, background 0.2s;
+}
+.main-nav a:hover,
+.main-nav a.router-link-active {
+  color: #fff;
+  background: rgba(255,255,255,0.1);
 }
 .header-right {
   display: flex;

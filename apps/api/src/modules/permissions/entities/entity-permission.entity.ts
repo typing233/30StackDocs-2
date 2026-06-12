@@ -25,6 +25,12 @@ export class EntityPermission {
   @Column()
   action: string;
 
+  @Column({ default: 'allow' })
+  effect: string;
+
+  @Column({ type: 'int', default: 0 })
+  priority: number;
+
   @Column('uuid')
   tenantId: string;
 

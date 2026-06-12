@@ -17,6 +17,14 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     if (isPublic) {
       return true;
     }
+
+    // Skip JWT validation for API token requests (handled by ApiTokenGuard)
+    const request = context.switchToHttp().getRequest();
+    const authHeader = request.headers['authorization'] || '';
+    if (authHeader.startsWith('Bearer sd_')) {
+      return true;
+    }
+
     return super.canActivate(context);
   }
 }

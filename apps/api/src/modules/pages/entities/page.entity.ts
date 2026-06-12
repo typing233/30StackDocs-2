@@ -36,6 +36,9 @@ export class Page extends BaseEntity {
   @Column({ type: 'boolean', default: false })
   isDraft: boolean;
 
+  @Column({ type: 'tsvector', select: false, nullable: true })
+  searchVector: string;
+
   @OneToMany(() => PageRevision, (revision) => revision.page)
   revisions: PageRevision[];
 }

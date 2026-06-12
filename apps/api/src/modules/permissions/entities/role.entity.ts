@@ -13,8 +13,17 @@ export class RoleEntity {
   @Column()
   name: string;
 
+  @Column({ type: 'text', nullable: true })
+  description: string | null;
+
   @Column('uuid')
   tenantId: string;
+
+  @Column({ default: false })
+  isSystem: boolean;
+
+  @Column({ type: 'jsonb', default: [] })
+  permissions: string[];
 
   @CreateDateColumn()
   createdAt: Date;

@@ -14,6 +14,9 @@ export class Book extends BaseEntity {
   @Column({ type: 'text', nullable: true })
   description: string | null;
 
+  @Column({ type: 'tsvector', select: false, nullable: true })
+  searchVector: string;
+
   @OneToMany(() => Chapter, (chapter) => chapter.book)
   chapters: Chapter[];
 
