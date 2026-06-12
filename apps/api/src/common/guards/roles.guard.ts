@@ -15,6 +15,12 @@ export class RolesGuard implements CanActivate {
       return true;
     }
     const { user } = context.switchToHttp().getRequest();
+
+    // API token users bypass role checks — scope enforcement is handled by ApiTokenGuard
+    if (user?.isApiToken) {
+      return true;
+    }
+
     return requiredRoles.some((role) => user.roles?.includes(role));
   }
 }

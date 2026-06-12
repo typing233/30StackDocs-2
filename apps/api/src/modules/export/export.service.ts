@@ -41,12 +41,27 @@ export class ExportService {
     options: Record<string, any> = {},
   ): Promise<ExportJob> {
     // Permission check: user must have view access to the target entity
+    // For pages, also check inherited permissions via parent book/chapter
+    let parentEntities: { type: string; id: string }[] | undefined;
+    if (entityType === 'page') {
+      const page = await this.pageRepo.findOne({ where: { id: entityId, tenantId } });
+      if (!page) throw new NotFoundException('Page not found');
+      parentEntities = [];
+      if (page.chapterId) {
+        parentEntities.push({ type: 'chapter', id: page.chapterId });
+      }
+      if (page.bookId) {
+        parentEntities.push({ type: 'book', id: page.bookId });
+      }
+    }
+
     const hasAccess = await this.permissionsService.hasPermission(
       userId,
       tenantId,
       entityType,
       entityId,
       ['view'],
+      parentEntities,
     );
     if (!hasAccess && !userRoles.includes('admin')) {
       throw new ForbiddenException('You do not have permission to export this resource');

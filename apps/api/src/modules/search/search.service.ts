@@ -182,13 +182,16 @@ export class SearchService {
       type: row.type as 'page' | 'book',
       title: row.title,
       slug: row.slug,
-      snippet: row.content_hl || '',
+      snippet: this.ensureHighlight(row.content_hl || '', query),
       bookId: row.bookId || undefined,
       bookName: row.bookName || undefined,
       chapterId: row.chapterId || undefined,
       chapterName: row.chapterName || undefined,
       rank: parseFloat(row.rank) || 0,
-      highlights: [row.title_hl, row.content_hl].filter(Boolean),
+      highlights: [
+        this.ensureHighlight(row.title_hl || '', query),
+        this.ensureHighlight(row.content_hl || '', query),
+      ].filter(Boolean),
     }));
 
     const response = { data: results, meta: { total, page, limit } };
@@ -235,6 +238,52 @@ export class SearchService {
 
   private escapeTsToken(token: string): string {
     return token.replace(/[&|!():*'\\<>]/g, '');
+  }
+
+  /**
+   * If ts_headline didn't produce any <mark> tags (common with CJK text),
+   * fall back to regex-based highlighting of the original query terms.
+   */
+  private ensureHighlight(text: string, query: string): string {
+    if (!text || text.includes('<mark>')) return text;
+
+    const terms = this.extractHighlightTerms(query);
+    if (terms.length === 0) return text;
+
+    const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const pattern = new RegExp(`(${escaped.join('|')})`, 'gi');
+    return text.replace(pattern, '<mark>$1</mark>');
+  }
+
+  private extractHighlightTerms(query: string): string[] {
+    const cjkRange = /[一-鿿㐀-䶿豈-﫿]/;
+    const terms: string[] = [];
+    let western = '';
+
+    for (const ch of query.trim()) {
+      if (cjkRange.test(ch)) {
+        if (western.trim()) {
+          terms.push(western.trim());
+          western = '';
+        }
+        terms.push(ch);
+      } else if (/\s/.test(ch)) {
+        if (western.trim()) {
+          terms.push(western.trim());
+          western = '';
+        }
+      } else {
+        western += ch;
+      }
+    }
+    if (western.trim()) terms.push(western.trim());
+
+    // Also add the full query if it contains multiple CJK characters for consecutive matching
+    const fullTrimmed = query.trim();
+    if (fullTrimmed.length > 1 && cjkRange.test(fullTrimmed)) {
+      terms.unshift(fullTrimmed);
+    }
+    return terms;
   }
 
   /**
